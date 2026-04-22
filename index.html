@@ -168,12 +168,15 @@
     </div>
 
     <script>
-      // ✅ Put your Lambda Function URL / API Gateway URL here
-      const apiUrl = "https://5j5745a7m7wqhcgdlkvjxpcde40myaai.lambda-url.us-east-1.on.aws";
+      var apiUrl = "https://5j5745a7m7wqhcgdlkvjxpcde40myaai.lambda-url.us-east-1.on.aws";
 
-      const chatBox = document.getElementById("chat");
-      const input = document.getElementById("input");
-      const sendBtn = document.getElementById("send");
+      // Stores the session ID that Bedrock returns after the first message.
+      // Empty on page load — Bedrock creates the session on the first call.
+      var bedrockSessionId = "";
+
+      var chatBox = document.getElementById("chat");
+      var input   = document.getElementById("input");
+      var sendBtn = document.getElementById("send");
 
       function escapeHtml(str) {
         return String(str)
@@ -191,76 +194,84 @@
         );
       }
 
-      function appendMessage(sender, text, cls, { html = false } = {}) {
-        const div = document.createElement("div");
-        div.className = `msg ${cls}`;
-
-        const safeSender = escapeHtml(sender);
-
-        if (html) {
-          div.innerHTML = `<span class="sender">${safeSender}:</span> <span class="bubble">${text}</span>`;
+      function appendMessage(sender, text, cls, opts) {
+        opts = opts || {};
+        var div = document.createElement("div");
+        div.className = "msg " + cls;
+        var safeSender = escapeHtml(sender);
+        if (opts.html) {
+          div.innerHTML = '<span class="sender">' + safeSender + ':</span> <span class="bubble">' + text + '</span>';
         } else {
-          div.innerHTML = `<span class="sender">${safeSender}:</span> <span class="bubble">${escapeHtml(text)}</span>`;
+          div.innerHTML = '<span class="sender">' + safeSender + ':</span> <span class="bubble">' + escapeHtml(text) + '</span>';
         }
-
         chatBox.appendChild(div);
         chatBox.scrollTop = chatBox.scrollHeight;
         return div;
       }
 
-      function updateLastBotMessage(div, text, { html = false } = {}) {
+      function updateLastBotMessage(div, text, opts) {
+        opts = opts || {};
         if (!div) return;
-        const bubble = div.querySelector(".bubble");
+        var bubble = div.querySelector(".bubble");
         if (!bubble) return;
-
-        bubble.innerHTML = html ? text : escapeHtml(text);
+        bubble.innerHTML = opts.html ? text : escapeHtml(text);
         chatBox.scrollTop = chatBox.scrollHeight;
       }
 
-      async function sendMessage() {
-        const message = input.value.trim();
+      function sendMessage() {
+        var message = input.value.trim();
         if (!message) return;
 
         appendMessage("You", message, "user");
         input.value = "";
         input.focus();
 
-        const botDiv = appendMessage("PolyBot", "Thinking…", "bot");
+        var botDiv = appendMessage("PolyBot", "Thinking…", "bot");
         sendBtn.disabled = true;
 
-        try {
-          const res = await fetch(apiUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message }),
+        var payload = { message: message };
+
+        // Only include bedrockSessionId if Bedrock has given us one
+        if (bedrockSessionId) {
+          payload.bedrockSessionId = bedrockSessionId;
+        }
+
+        fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        })
+        .then(function(res) {
+          return res.text().then(function(rawText) {
+            var data = {};
+            try { data = JSON.parse(rawText); } catch(e) {}
+
+            if (!res.ok) {
+              var errMsg = (data && (data.detail || data.error)) || rawText || ("HTTP " + res.status);
+              updateLastBotMessage(botDiv, "Server error: " + escapeHtml(errMsg));
+              return;
+            }
+
+            // Store Bedrock's session ID for all subsequent messages
+            if (data.bedrockSessionId) {
+              bedrockSessionId = data.bedrockSessionId;
+            }
+
+            var answerText = (data && (data.answer || data.response)) || "No response";
+            var answerHtml = linkify(escapeHtml(answerText)).replace(/\n/g, "<br/>");
+            updateLastBotMessage(botDiv, answerHtml, { html: true });
           });
-
-          const rawText = await res.text();
-          let data = {};
-          try { data = JSON.parse(rawText); } catch {}
-
-          if (!res.ok) {
-            const errMsg =
-              (data && (data.detail || data.error)) ||
-              rawText ||
-              `HTTP ${res.status}`;
-            updateLastBotMessage(botDiv, `Server error: ${escapeHtml(errMsg)}`);
-            console.error("API error:", res.status, rawText);
-            return;
-          }
-
-          const answerText = (data && (data.answer || data.response)) || "No response";
-          const answerHtml = linkify(escapeHtml(answerText)).replace(/\n/g, "<br/>");
-          updateLastBotMessage(botDiv, answerHtml, { html: true });
-        } catch (e) {
+        })
+        .catch(function(e) {
           updateLastBotMessage(botDiv, "Error contacting server.");
           console.error(e);
-        } finally {
+        })
+        .finally(function() {
           sendBtn.disabled = false;
-        }
+        });
       }
 
-      window.addEventListener("load", () => {
+      window.addEventListener("load", function() {
         appendMessage(
           "PolyBot",
           "Hi! I'm your assistant for MSBA-related questions. How can I help you today?",
@@ -270,7 +281,7 @@
 
       sendBtn.addEventListener("click", sendMessage);
 
-      input.addEventListener("keydown", (e) => {
+      input.addEventListener("keydown", function(e) {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           sendMessage();
